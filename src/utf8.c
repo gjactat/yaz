@@ -17,10 +17,21 @@
 
 #include "iconv-p.h"
 
+struct decoder_data {
+    unsigned long prev;
+    size_t no_read;
+};
+
 static size_t init_utf8(yaz_iconv_t cd, yaz_iconv_decoder_t d,
                         unsigned char *inp,
                         size_t inbytesleft, size_t *no_read)
 {
+    struct decoder_data *data = (struct decoder_data *) d->data;
+    if (data)
+    {
+        data->prev = 0;
+        data->no_read = 0;
+    }
     if (!inp || inp[0] != 0xef)
     {
         *no_read = 0;
@@ -146,6 +157,35 @@ static unsigned long read_utf8(yaz_iconv_t cd, yaz_iconv_decoder_t d,
 }
 
 
+static unsigned long read_utf8s(yaz_iconv_t cd, yaz_iconv_decoder_t d,
+                               unsigned char *inp,
+                               size_t inbytesleft, size_t *no_read)
+{
+    struct decoder_data *data = (struct decoder_data *) d->data;
+    int err = 0;
+    unsigned long x = yaz_read_UTF8_char(inp, inbytesleft, no_read, &err);
+    yaz_iconv_set_errno(cd, err);
+    if (x == 0)
+    {
+        yaz_iconv_set_errno(cd, err);
+        return x;
+    }
+    if (data->no_read == 0) {
+        data->prev = x;
+        data->no_read = *no_read;
+        x = yaz_read_UTF8_char(inp, inbytesleft, no_read, &err);
+        if (x == 0)
+        {
+            yaz_iconv_set_errno(cd, err);
+            return x;
+        }
+    }
+    if (yaz_iso_8859_1_lookup_x12(x, data->prev, &x))
+    
+}
+
+
+
 static size_t write_UTF8(yaz_iconv_t cd, yaz_iconv_encoder_t en,
                              unsigned long x,
                              char **outbuf, size_t *outbytesleft)
@@ -228,6 +268,12 @@ yaz_iconv_encoder_t yaz_utf8_encoder(const char *tocode,
     return 0;
 }
 
+static void destroy_utf8s(yaz_iconv_decoder_t d)
+{
+    struct decoder_data *data = (struct decoder_data *) d->data;
+    xfree(data);
+}
+
 yaz_iconv_decoder_t yaz_utf8_decoder(const char *fromcode,
                                      yaz_iconv_decoder_t d)
 {
@@ -235,6 +281,18 @@ yaz_iconv_decoder_t yaz_utf8_decoder(const char *fromcode,
     {
         d->init_handle = init_utf8;
         d->read_handle = read_utf8;
+        return d;
+    }
+    if (!yaz_matchstr(fromcode, "UTF8s"))
+    {
+        struct decoder_data *data = (struct decoder_data *)
+            xmalloc(sizeof(*data));
+
+        d->init_handle = init_utf8;
+        d->read_handle = read_utf8s;
+        d->data = data;
+        d->destroy_handle = destroy_utf8s;
+
         return d;
     }
     return 0;
